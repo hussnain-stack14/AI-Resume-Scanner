@@ -1,0 +1,98 @@
+/* --- ANIMATIONS --- */
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseGlow {
+    0% { box-shadow: 0 0 0 0 rgba(0, 90, 50, 0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(0, 90, 50, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(0, 90, 50, 0); }
+}
+
+@keyframes slideInLeft {
+    from { transform: translateX(-30px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+/* Base Entrance */
+.main .block-container {
+    animation: fadeInUp 0.8s ease-out;
+}
+
+/* Metric Pulse */
+[data-testid="stMetric"] {
+    animation: fadeInUp 0.6s ease-out;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+}
+
+[data-testid="stMetric"]:hover {
+    transform: scale(1.02) !important;
+    border-color: #005a32 !important;
+    animation: pulseGlow 2s infinite;
+}
+
+/* Button Interactions */
+div.stButton > button:first-child { 
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+}
+
+div.stButton > button:first-child:hover { 
+    letter-spacing: 0.05em !important;
+    transform: scale(1.02) translateY(-2px) !important;
+}
+
+/* Skill Tag Entrance and Hover */
+.skill-tag {
+    transition: all 0.3s ease !important;
+}
+
+.skill-tag:hover {
+    filter: brightness(1.1);
+    transform: translateY(-3px) rotate(1deg);
+    cursor: default;
+}
+
+/* Navbar Slide in */
+.navbar {
+    animation: slideInLeft 0.5s ease-out;
+}
+
+/* THEME ADAPTIVE STYLES (Restored & Optimized) */
+h1, h2, h3, h4, .stMarkdown, p, span, label, [data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
+    color: inherit !important;
+}
+
+h1, h2, h3 { color: #005a32 !important; }
+
+.navbar { 
+    position: fixed; top: 0; left: 0; right: 0; height: 60px; 
+    background: rgba(128, 128, 128, 0.05);
+    backdrop-filter: blur(20px);
+    display: flex; align-items: center; padding: 0 5%; 
+    border-bottom: 1px solid rgba(128,128,128,0.2);
+    z-index: 10000; 
+}
+
+.footer { 
+    padding: 3rem 1rem; background: rgba(128,128,128,0.03); 
+    text-align: center; border-top: 1px solid rgba(128,128,128,0.1); 
+    margin-top: 5rem; 
+}
+
+.skill-tag { 
+    display: inline-block; padding: 5px 14px; border-radius: 50px; 
+    font-size: 0.85rem; margin: 4px; font-weight: 600; 
+    border: 1px solid rgba(128,128,128,0.3);
+}
+
+.skill-found { background-color: rgba(0, 255, 0, 0.08); color: #4caf50 !important; }
+.skill-missing { background-color: rgba(255, 103, 0, 0.08); color: #ff6700 !important; }
+
+[data-testid="stMetric"] { background: rgba(128,128,128,0.05) !important; border: 1px solid rgba(128,128,128,0.1) !important; }
+
+div.stButton > button:first-child { 
+    background: linear-gradient(135deg, #005a32, #2d6a4f) !important; 
+    color: white !important; border-radius: 10px !important; width: 100%;
+}
+div.stButton > button:first-child:hover { background: #ff6700 !important; }
