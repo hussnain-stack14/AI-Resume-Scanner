@@ -2,15 +2,20 @@ import streamlit as st
 import tempfile
 import os
 import pandas as pd
-from utils import extract_text_from_pdf, clean_text, calculate_similarity, get_keyword_density
-from skills import extract_skills, get_missing_skills
+import json
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+from utils import extract_text_from_pdf, clean_text
 
 # --- SEO & PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="ResumeAI Pro | Premium ATS Scanner", 
     page_icon="⚡", 
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Meta tags for SEO through raw HTML (Best effort mapping to SEO in Streamlit)
@@ -22,13 +27,43 @@ st.markdown("""
     </head>
 """, unsafe_allow_html=True)
 
+# --- STATE MANAGEMENT ---
+if 'theme' not in st.session_state:
+    st.session_state.theme = 'Light'
+
+if 'view' not in st.session_state:
+    st.session_state.view = 'input'
+if 'results' not in st.session_state:
+    st.session_state.results = None
+
+# --- AI AGENT CONFIGURATION ---
+with st.sidebar:
+    st.markdown("### 🤖 Generative AI Agent")
+    st.markdown("Enable the AI Agent to generate actionable, personalized resume improvement strategies.")
+    
+    if not GENAI_AVAILABLE:
+        st.error("⚠️ AI module missing. Check internet & run: `pip install google-generativeai`")
+        
+    api_key_input = st.text_input("Google Gemini API Key:", type="password", help="Required to activate the AI Agent. Get a free key at aistudio.google.com/app/apikey", disabled=not GENAI_AVAILABLE)
+    if api_key_input and GENAI_AVAILABLE:
+        st.session_state.gemini_key = api_key_input
+        genai.configure(api_key=api_key_input)
+        st.success("Agent Active!")
+    else:
+        st.session_state.gemini_key = None
+        if GENAI_AVAILABLE:
+            st.info("Input API Key to activate AI Agent")
+
 # --- CSS LOADING ---
 def local_css(file_name):
     if os.path.exists(file_name):
-        with open(file_name) as f:
+        with open(file_name, encoding="utf-8") as f:
             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
             
-local_css("style.css")
+if st.session_state.theme == 'Light':
+    local_css("style_light.css")
+else:
+    local_css("style.css")
 
 # --- UI COMPONENTS ---
 st.markdown("""
@@ -50,19 +85,26 @@ def draw_footer():
         </div>
     """, unsafe_allow_html=True)
 
-# --- STATE MANAGEMENT ---
-if 'view' not in st.session_state:
-    st.session_state.view = 'input'
-if 'results' not in st.session_state:
-    st.session_state.results = None
-
 # --- CORE APPLICATION FLOW ---
 
 if st.session_state.view == 'input':
     # --- HERO SECTION ---
     st.write("")
-    st.title("Optimize Your Career Trajectory")
-    st.markdown("<p style='font-size: 1.2rem; max-width: 800px;' class='dynamic-text'>Leverage advanced Natural Language Processing to analyze your resume against targeted job descriptions. Uncover missing skills and beat the ATS algorithms instantly.</p>", unsafe_allow_html=True)
+    h_c1, h_c2 = st.columns([5, 1])
+    with h_c1:
+        st.title("Optimize Your Career Trajectory")
+    with h_c2:
+        st.write("")
+        is_light = st.toggle("☀️ Light Theme", value=(st.session_state.theme == 'Light'), key="theme_t1")
+        if is_light and st.session_state.theme != 'Light':
+            st.session_state.theme = 'Light'
+            st.rerun()
+        elif not is_light and st.session_state.theme != 'Dark':
+            st.session_state.theme = 'Dark'
+            st.rerun()
+        st.write("")
+            
+    st.markdown("<p style='font-size: 1.2rem; max-width: 800px;' class='dynamic-text'>Leverage an advanced Generative AI Agent to deeply analyze your resume against targeted job descriptions. Uncover missing skills, instantly rewrite bullets, and beat the ATS algorithms.</p>", unsafe_allow_html=True)
     
     with st.expander("💡 Pro Optimization Tips & Settings"):
         st.markdown("""
@@ -133,13 +175,121 @@ if st.session_state.view == 'input':
                             c_jd = clean_text(job_description)
                             
                             st.write("🧩 Extracting entities and computing semantic distance...")
+                            
+                            agent_feedback = None
+                            if st.session_state.get('gemini_key') and GENAI_AVAILABLE:
+                                st.write("🧠 AI Agent analyzing context for personalized feedback...")
+                                try:
+                                    model = genai.GenerativeModel('gemini-1.5-flash')
+                                    prompt = f"""You are an intelligent resume scanning agent embedded in a hiring platform. Your job is to analyze uploaded resumes and job descriptions, then provide structured, actionable insights.
+
+## Your capabilities
+- Extract key information from resumes: skills, experience, education, certifications, and contact details.
+- Parse job descriptions to identify required qualifications, preferred skills, and role expectations.
+- Score resume-to-job match on a scale of 0-100, broken into: skills match, experience relevance, education fit, and keyword alignment.
+- Identify skill gaps and suggest concrete improvements the candidate can make.
+- Flag ATS (Applicant Tracking System) issues: missing keywords, poor formatting signals, or weak action verbs.
+- Rank and compare multiple resumes against a single job description when provided.
+
+## Behavior rules
+- Always respond in structured JSON unless the user explicitly asks for plain text.
+- Never fabricate information. If a section is missing from the resume, state it as "not found."
+- Be specific and concise — avoid vague feedback like "improve your resume." Give exact suggestions.
+- Keep a neutral, professional tone. Do not judge the candidate personally.
+- If the input is unclear or incomplete, ask a targeted clarifying question before proceeding. Ensure the response does not contain any markdown wrapping like ```json.
+
+## Output format (default)
+Return a JSON object STRICTLY with these fields:
+{{
+  "candidate_name": "",
+  "overall_match_score": 0,
+  "score_breakdown": {{
+    "skills_match": 0,
+    "experience_relevance": 0,
+    "education_fit": 0,
+    "keyword_alignment": 0
+  }},
+  "extracted_skills": [],
+  "missing_skills": [],
+  "ats_issues": [],
+  "top_strengths": [],
+  "improvement_suggestions": [],
+  "summary": ""
+}}
+
+## Context
+Job description: {job_description[:2000]}
+Resume text: {resume_text[:2000]}"""
+                                    response = model.generate_content(prompt)
+                                    cleaned_response = response.text.replace('```json', '').replace('```', '').strip()
+                                    agent_feedback = json.loads(cleaned_response)
+                                    
+                                    # --- INITIALIZE THE AGENT CHAT SESSION ---
+                                    # Give the agent its core system instruction and load the user's data into its memory
+                                    chat_session = model.start_chat(history=[
+                                        {"role": "user", "parts": [f"You are my elite personal AI Resume Agent. My targeted Job Description is:\n{job_description[:2000]}\n\nAnd my current Resume is:\n{resume_text[:2000]}\n\nKeep your answers concise, practical, and heavily tailored to getting me this specific job."]},
+                                        {"role": "model", "parts": ["Context successfully loaded. I am your personal AI Resume Agent. I'm ready to iteratively rewrite your bullet points, build a cover letter, or provide interview coaching. What would you like to do first?"]}
+                                    ])
+                                    st.session_state.agent_chat = chat_session
+                                    st.session_state.chat_history = [{"role": "assistant", "content": "Context successfully loaded! I am your personal AI Agent. I'm ready to iteratively rewrite your bullet points, build a cover letter, or provide interview coaching. What would you like to do first?"}]
+                                    
+                                    if not agent_feedback or "error" in agent_feedback:
+                                        status.update(label="System Error Encountered", state="error", expanded=True)
+                                        st.error(f"⚠️ AI Execution Error: {agent_feedback.get('error') if agent_feedback else 'Unknown error. Check API key.'}")
+                                        st.stop()
+                                except Exception as e:
+                                    st.toast(f"Invalid API Key: Falling back to Demo Mode!", icon="🧪")
+                                    agent_feedback = {
+                                        "candidate_name": "Demo Applicant",
+                                        "overall_match_score": 85,
+                                        "score_breakdown": {
+                                            "skills_match": 88,
+                                            "experience_relevance": 82,
+                                            "education_fit": 90,
+                                            "keyword_alignment": 80
+                                        },
+                                        "extracted_skills": ["Python", "React", "AWS", "Machine Learning"],
+                                        "missing_skills": ["Docker", "Kubernetes", "GraphQL"],
+                                        "ats_issues": ["Missing exact phrase 'Software Engineer'", "Use stronger action verbs"],
+                                        "top_strengths": ["Strong core languages", "Good educational background"],
+                                        "improvement_suggestions": ["Add Docker to your skills section", "Quantify your React experience"],
+                                        "summary": "This is a Portfolio Demo Mode summary. The candidate shows strong potential but lacks cloud orchestration skills."
+                                    }
+                                    class MockChat:
+                                        def send_message(self, msg):
+                                            class Resp:
+                                                text = "This is a Demo Mode response. Please add an API key for real AI chatting!"
+                                            return Resp()
+                                    st.session_state.agent_chat = MockChat()
+                                    st.session_state.chat_history = [{"role": "assistant", "content": "Welcome to Demo Mode! Your API key was invalid. Please provide a valid key in the sidebar for full conversational capabilities."}]
+                            else:
+                                st.toast("No API Key: Running in Portfolio Demo Mode!", icon="🧪")
+                                agent_feedback = {
+                                    "candidate_name": "Demo Applicant",
+                                    "overall_match_score": 85,
+                                    "score_breakdown": {
+                                        "skills_match": 88,
+                                        "experience_relevance": 82,
+                                        "education_fit": 90,
+                                        "keyword_alignment": 80
+                                    },
+                                    "extracted_skills": ["Python", "React", "AWS", "Machine Learning"],
+                                    "missing_skills": ["Docker", "Kubernetes", "GraphQL"],
+                                    "ats_issues": ["Missing exact phrase 'Software Engineer'", "Use stronger action verbs"],
+                                    "top_strengths": ["Strong core languages", "Good educational background"],
+                                    "improvement_suggestions": ["Add Docker to your skills section", "Quantify your React experience"],
+                                    "summary": "This is a Portfolio Demo Mode summary. The candidate shows strong potential but lacks cloud orchestration skills."
+                                }
+                                class MockChat:
+                                    def send_message(self, msg):
+                                        class Resp:
+                                            text = "This is a Demo Mode response. Please add an API key for real AI chatting!"
+                                        return Resp()
+                                st.session_state.agent_chat = MockChat()
+                                st.session_state.chat_history = [{"role": "assistant", "content": "Welcome to Demo Mode! I am your mocked AI Agent. Please provide an API key in the sidebar for full conversational capabilities."}]
+                                        
                             st.session_state.results = {
-                                "score": calculate_similarity(c_res, c_jd),
-                                "found": extract_skills(c_res),
-                                "missing": get_missing_skills(extract_skills(c_res), extract_skills(c_jd)),
-                                "keywords": get_keyword_density(c_jd),
-                                "cleaned_res": c_res,
-                                "jd_skills": extract_skills(c_jd)
+                                "agent_feedback": agent_feedback
                             }
                             status.update(label="Neural Scan Complete! Rendering Dashboard...", state="complete", expanded=False)
                             st.toast("Analysis Successful!", icon="🎉")
@@ -157,11 +307,23 @@ elif st.session_state.view == 'result' and st.session_state.results:
     res = st.session_state.results
     
     # Dashboard Header Bar
-    h_col1, h_col2 = st.columns([4, 1])
+    h_col1, h_col2, h_col3 = st.columns([5, 1.5, 1.5])
     with h_col1:
         st.title("📊 Intelligence Report")
         st.markdown("<p style='font-size: 1.1rem; margin-top: -15px;' class='dynamic-text'>Comprehensive breakdown of your ATS compatibility.</p>", unsafe_allow_html=True)
     with h_col2:
+        st.write("")
+        st.write("")
+        st.write("")
+        is_light_r = st.toggle("☀️ Light Theme", value=(st.session_state.theme == 'Light'), key="theme_t2")
+        if is_light_r and st.session_state.theme != 'Light':
+            st.session_state.theme = 'Light'
+            st.rerun()
+        elif not is_light_r and st.session_state.theme != 'Dark':
+            st.session_state.theme = 'Dark'
+            st.rerun()
+    with h_col3:
+        st.write("")
         st.write("")
         if st.button("⬅️ Modify Inputs", use_container_width=True):
             st.session_state.view = 'input'
@@ -171,17 +333,18 @@ elif st.session_state.view == 'result' and st.session_state.results:
 
     # Highlight Metric Block
     m_col1, m_col2, m_col3 = st.columns([1.5, 1, 2.5], gap="large")
+    agent_data = res.get("agent_feedback") or {}
+    score = int(agent_data.get("overall_match_score", 0))
     
     with m_col1:
-        score = res["score"]
         st.metric("Neural Match Score", f"{score}%")
         st.progress(score/100)
         
     with m_col2:
-        total_found = sum(len(s) for s in res["found"].values())
-        missing_total = sum(len(s) for s in res["missing"].values())
-        st.metric("Verified Skills", total_found)
-        st.metric("Missing Skills", missing_total)
+        extracted = agent_data.get("extracted_skills", [])
+        missing = agent_data.get("missing_skills", [])
+        st.metric("Extracted Skills", len(extracted))
+        st.metric("Missing Skills", len(missing))
     
     with m_col3:
         st.markdown("### System Verdict")
@@ -198,74 +361,91 @@ elif st.session_state.view == 'result' and st.session_state.results:
     
     # Tabbed Interface for Advanced Interaction
     st.markdown("### 🛠️ Extracted Metadata Analysis")
-    t1, t2, t3 = st.tabs(["🚀 Verified Strengths", "🎯 Missing Requirements", "📈 Keyword Distribution"])
     
-    # Helper to generate tags
-    def generate_tags(skills_list, css_class):
-        html = '<div class="skill-container">'
-        icon = "✨" if "found" in css_class else "⚠️"
-        for s in sorted(skills_list):
-            html += f'<span class="skill-tag {css_class}"><span style="margin-right: 4px;">{icon}</span> {s.title()}</span>'
-        html += '</div>'
-        return html
-
-    with t1:
-        total = sum(len(s) for s in res["found"].values())
-        if total == 0:
-            st.info("No industry-specific technical entities were detected. Try adopting more standard professional nomenclature.")
-        else:
-            st.markdown(f"<p style='margin-bottom: 20px;' class='dynamic-text'>Engine identified <b>{total}</b> verified competencies mapped to industry standards.</p>", unsafe_allow_html=True)
-            for cat, skills in res["found"].items():
-                if skills:
-                    with st.expander(f"📦 {cat} ({len(skills)} verified)", expanded=True):
-                        st.markdown(generate_tags(skills, "skill-found"), unsafe_allow_html=True)
-
-    with t2:
-        jd_skills = res["jd_skills"]
-        has_jd_skills = any(len(s) > 0 for s in jd_skills.values())
+    t_agent, t_gap, t_chat = st.tabs(["📊 Executive AI Report", "🎯 Skill Gap & Strengths", "💬 Chat with Agent"])
+    
+    with t_agent:
+        st.markdown("#### 🧠 Intelligent Resume AI Agent Analysis")
+        st.markdown("<p style='font-size:0.95rem;' class='dynamic-text'>Comprehensive LLM evaluation based on actionable recruiting insights.</p>", unsafe_allow_html=True)
         
-        if not has_jd_skills:
-            st.info("Target Job Description lacks parsable strict-match keywords for categorical gap mapping. Rely on Frequency Keywords below.")
-        else:
-            missing_total = sum(len(s) for s in res["missing"].values())
-            if missing_total == 0:
-                st.success("🎯 Flawless alignment. You cover 100% of the explicitly outlined domain technologies.")
-            else:
-                st.markdown(f"<p style='font-weight: 600;' class='skill-missing-text'>Identified {missing_total} critical capability voids. Resolving these will dramatically improve ATS parseability.</p>", unsafe_allow_html=True)
-                
-                # Downloadable Action Plan
-                missing_report = "--- RESUME OPTIMIZATION PLAN ---\n\nMissing Skills by Category:\n"
-                for cat, skills in res["missing"].items():
-                    if skills:
-                        missing_report += f"\n[{cat}]\n- " + "\n- ".join(sorted(skills)) + "\n"
-                        with st.expander(f"⚠️ Void in {cat} ({len(skills)} missing)", expanded=True):
-                            st.markdown(generate_tags(skills, "skill-missing"), unsafe_allow_html=True)
-                
-                st.write("")
-                st.download_button(
-                    label="📥 Download Action Plan (.txt)",
-                    data=missing_report,
-                    file_name="resume_action_plan.txt",
-                    mime="text/plain",
-                    help="Download this list to use as a checklist when updating your resume."
-                )
+        c_exec, c_score = st.columns([3, 1])
+        with c_exec:
+            st.info(f"**Candidate:** {agent_data.get('candidate_name', 'Not Found')}\n\n**Agent Summary:** {agent_data.get('summary', 'No summary provided.')}")
+        with c_score:
+            st.metric("Agent Overall Match", f"{score}/100")
         
-        # Keyword Fallback Mechanism
-        missing_kw = [k for k, v in res["keywords"] if k.lower() not in res["cleaned_res"]]
-        if missing_kw:
+        st.write("")
+        st.markdown("##### 📊 Match Score Breakdown")
+        bdown = agent_data.get('score_breakdown', {})
+        col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+        col_b1.metric("Skills", bdown.get('skills_match', 0))
+        col_b2.metric("Experience", bdown.get('experience_relevance', 0))
+        col_b3.metric("Education", bdown.get('education_fit', 0))
+        col_b4.metric("Keywords", bdown.get('keyword_alignment', 0))
+        
+        st.write("")
+        st.markdown("##### 💡 Actionable Improvements")
+        for imp in agent_data.get("improvement_suggestions", []):
+            st.info(f"**Suggestion:** {imp}")
+        st.write("")
+        
+    with t_gap:
+        col_ls, col_rs = st.columns(2)
+        with col_ls:
+            st.markdown("##### 🌟 Top Strengths")
+            for s in agent_data.get("top_strengths", []):
+                st.markdown(f"<p style='margin-bottom:5px;' class='dynamic-text'>✅ {s}</p>", unsafe_allow_html=True)
+            
             st.write("")
-            st.markdown("#### 🔍 High-Frequency Keywords Required")
-            st.markdown("<p style='font-size: 0.9rem;' class='dynamic-text'>These conceptual keywords appeared frequently in the JD but are entirely absent from your document:</p>", unsafe_allow_html=True)
-            st.markdown(generate_tags(missing_kw[:15], "skill-missing"), unsafe_allow_html=True)
-
-    with t3:
-        st.markdown("<p style='margin-bottom: 20px;' class='dynamic-text'>Semantic entity density inside the Job Description. Use this to prioritize which keywords to heavily emphasize.</p>", unsafe_allow_html=True)
-        if res["keywords"]:
-            df = pd.DataFrame(res["keywords"][:20], columns=["Entity Map", "Repetition Impact"])
-            # Modern bar chart integration
-            st.bar_chart(df.set_index("Entity Map"), color="#059669", height=400)
-        else:
-            st.info("Data insufficient for robust visualization parameters.")
+            st.markdown("##### 🛠️ Extracted Skills")
+            if extracted:
+                html = '<div class="skill-container">' + "".join([f'<span class="skill-tag skill-found">✨ {s}</span>' for s in extracted]) + '</div>'
+                st.markdown(html, unsafe_allow_html=True)
+                
+        with col_rs:
+            st.markdown("##### ⚠️ ATS Issues")
+            ats_issues = agent_data.get("ats_issues", [])
+            if ats_issues:
+                for alt in ats_issues:
+                    st.markdown(f"<p style='margin-bottom:5px; color: var(--accent-main);' class='dynamic-text'>🚨 {alt}</p>", unsafe_allow_html=True)
+            else:
+                st.success("No ATS issues detected.")
+                
+            st.write("")
+            st.markdown("##### 🎯 Missing Requirements")
+            if missing:
+                html = '<div class="skill-container">' + "".join([f'<span class="skill-tag skill-missing">⚠️ {s}</span>' for s in missing]) + '</div>'
+                st.markdown(html, unsafe_allow_html=True)
+            else:
+                st.success("No critical missing skills!")
+    
+    with t_chat:
+        st.markdown("#### 🤖 Interactive Resume Agent")
+        st.markdown("<p style='font-size:0.95rem;' class='dynamic-text'>Your Agent has memorized your Resume and the Job Description. Ask it to do the heavy lifting for you!</p>", unsafe_allow_html=True)
+        
+        if 'chat_history' in st.session_state:
+            chat_container = st.container(height=400)
+            with chat_container:
+                for msg in st.session_state.chat_history:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+            
+            user_query = st.chat_input("Ask the agent to write a cover letter, rewrite a bullet, etc...")
+            if user_query:
+                st.session_state.chat_history.append({"role": "user", "content": user_query})
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.markdown(user_query)
+                    with st.chat_message("assistant"):
+                        with st.spinner("Agent is running task..."):
+                            try:
+                                response = st.session_state.agent_chat.send_message(user_query)
+                                msg_text = response.text
+                            except Exception as e:
+                                msg_text = f"Agent encountered an error: {e}"
+                            st.markdown(msg_text)
+                st.session_state.chat_history.append({"role": "assistant", "content": msg_text})
+                st.rerun()
 
 # --- FOOTER INJECTION ---
 draw_footer()
